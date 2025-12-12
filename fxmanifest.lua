@@ -2,7 +2,7 @@ fx_version 'cerulean'
 game 'gta5'
 
 author 'R-Script Labs'
-description 'Advanced SafeZone'
+description 'Advanced Zones'
 
 ui_page 'html/index.html'
 
@@ -11,3 +11,4 @@ files {
 }
 
 client_script 'client.lua'
+
