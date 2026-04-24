@@ -1,34 +1,12 @@
-local safezones = {
-    { coords = vec3(140.96, -3092.31, 5.9), radius = 50.0 },
-    { coords = vec3(129.46, -1075.94, 29.19), radius = 30.0 },
-    { coords = vec3(-451.58, -334.7, 34.36), radius = 60.0 },
-    { coords = vec3(-530.42, -228.85, 35.7), radius = 60.0 },
-    { coords = vec3(1467.82, 6357.97, 23.8), radius = 50.0 },
-    { coords = vec3(-43.86, -1097.93, 26.42), radius = 40.0 },
-    { coords = vec3(-1703.3, -1135.83, 13.15), radius = 30.0 },
-    { coords = vec3(1070.72, 2310.45, 45.51), radius = 50.0 },
-    { coords = vec3(712.86, 146.35, 79.75), radius = 50.0 },
-    { coords = vec3(947.0, 41.17, 70.43), radius = 100.0 },
+local inZoneType = nil
+local zoneBlips = {}
 
-}
-
-local dominationZones = {
-    { coords = vec3(687.25, 577.5, 146.67), radius = 80.0 },
-}
-
-local drugzones = {
-    { coords = vec3(1387.0, 3604.0, 38.9), radius = 80.0 },
-    { coords = vec3(2434.97, 4967.01, 41.35), radius = 60.0 },
-}
-
-local inSafezone, inDomination, inDrugzone = false, false, false
-
--- Disable combat in safezones
 local function disableCombatControls()
     local ped = PlayerPedId()
     DisablePlayerFiring(ped, true)
     DisableControlAction(0, 24, true) -- Attack
     DisableControlAction(0, 25, true) -- Aim
+
     DisableControlAction(0, 257, true) -- Melee attack
     DisableControlAction(0, 263, true) -- Weapon select
     DisableControlAction(0, 140, true) -- Melee light attack
@@ -38,98 +16,225 @@ local function disableCombatControls()
     SetCurrentPedWeapon(ped, `WEAPON_UNARMED`, true)
 end
 
--- Create Domination Zone blips (red radius + skull)
-CreateThread(function()
-    for _, zone in pairs(dominationZones) do
-        local blip = AddBlipForRadius(zone.coords.x, zone.coords.y, zone.coords.z, zone.radius)
-        SetBlipColour(blip, 1) -- Red
-        SetBlipAlpha(blip, 120)
+local function clearBlips()
+    for _, blip in ipairs(zoneBlips) do
+        if DoesBlipExist(blip) then
+            RemoveBlip(blip)
+        end
+    end
+    zoneBlips = {}
+end
 
-        local blipIcon = AddBlipForCoord(zone.coords.x, zone.coords.y, zone.coords.z)
-        SetBlipSprite(blipIcon, 303) -- Skull
-        SetBlipScale(blipIcon, 0.0)
-        SetBlipColour(blipIcon, 1)
-        SetBlipAsShortRange(blipIcon, true)
-        BeginTextCommandSetBlipName("STRING")
-        AddTextComponentString("Domination Zone")
-        EndTextCommandSetBlipName(blipIcon)
+local function createZoneBlip(coords, radius, typeCfg)
+    local blipsCfg = Config.Blips or {}
+    if blipsCfg.enabled == false then
+        return
+    end
+
+    local rad = AddBlipForRadius(coords.x, coords.y, coords.z, radius)
+    SetBlipColour(rad, typeCfg.blipColor or 0)
+    SetBlipAlpha(rad, blipsCfg.alpha or 120)
+    table.insert(zoneBlips, rad)
+
+    local icon = AddBlipForCoord(coords.x, coords.y, coords.z)
+    SetBlipSprite(icon, typeCfg.blipSprite or 1)
+    SetBlipScale(icon, typeCfg.blipScale or 0.9)
+    SetBlipColour(icon, typeCfg.blipColor or 0)
+    SetBlipAsShortRange(icon, blipsCfg.shortRange ~= false)
+    BeginTextCommandSetBlipName('STRING')
+    AddTextComponentString(typeCfg.label or 'Zone')
+    EndTextCommandSetBlipName(icon)
+    table.insert(zoneBlips, icon)
+end
+
+CreateThread(function()
+    Wait(0)
+
+    if Config.Enabled == false then
+        clearBlips()
+        return
+    end
+
+    clearBlips()
+
+    for zoneType, list in pairs(Config.Zones or {}) do
+        local typeCfg = (Config.ZoneTypes and Config.ZoneTypes[zoneType]) or {}
+        if typeCfg.enabled ~= false then
+            for _, zone in ipairs(list) do
+                if zone.enabled ~= false then
+                    createZoneBlip(zone.coords, zone.radius, typeCfg)
+                end
+            end
+        end
     end
 end)
 
--- Create Drug Zone blips (purple radius + pill/leaf)
-CreateThread(function()
-    for _, zone in pairs(drugzones) do
-        local blip = AddBlipForRadius(zone.coords.x, zone.coords.y, zone.coords.z, zone.radius)
-        SetBlipColour(blip, 7) -- Purple
-        SetBlipAlpha(blip, 120)
-
-        local blipIcon = AddBlipForCoord(zone.coords.x, zone.coords.y, zone.coords.z)
-        SetBlipSprite(blipIcon, 51) -- Pill (swap to 403 for leaf)
-        SetBlipScale(blipIcon, 0.9)
-        SetBlipColour(blipIcon, 7)
-        SetBlipAsShortRange(blipIcon, true)
-        BeginTextCommandSetBlipName("STRING")
-        AddTextComponentString("Drug Zone")
-        EndTextCommandSetBlipName(blipIcon)
+local function isTypeEnabled(zoneType)
+    local typeCfg = Config.ZoneTypes and Config.ZoneTypes[zoneType] or nil
+    if not typeCfg then
+        return false
     end
-end)
+    return typeCfg.enabled ~= false
+end
 
--- Zone detection loop
+local function getTypeConfig(zoneType)
+    return (Config.ZoneTypes and Config.ZoneTypes[zoneType]) or {}
+end
+
+local function findCurrentZoneType(pos)
+    local bestType = nil
+    local bestDist = nil
+
+    for zoneType, list in pairs(Config.Zones or {}) do
+        if isTypeEnabled(zoneType) then
+            for _, zone in ipairs(list) do
+                if zone.enabled ~= false then
+                    local d = #(pos - zone.coords)
+                    if d <= (zone.radius or 0.0) then
+                        if not bestDist or d < bestDist then
+                            bestType = zoneType
+                            bestDist = d
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    return bestType
+end
+
+local function getNearestEnabledZoneDistance(pos)
+    local nearest = nil
+    for zoneType, list in pairs(Config.Zones or {}) do
+        if isTypeEnabled(zoneType) then
+            for _, zone in ipairs(list) do
+                if zone.enabled ~= false then
+                    local d = #(pos - zone.coords) - (zone.radius or 0.0)
+                    if d < 0.0 then
+                        d = 0.0
+                    end
+                    if not nearest or d < nearest then
+                        nearest = d
+                    end
+                end
+            end
+        end
+    end
+    return nearest
+end
+
+local function drawSphereAtZone(zone, typeCfg)
+    local spheresCfg = Config.Spheres or {}
+    if spheresCfg.enabled == false then
+        return
+    end
+
+    local radius = zone.radius or 50.0
+
+    local opacity = spheresCfg.opacity
+    if type(opacity) ~= 'number' then
+        local alpha = spheresCfg.alpha
+        if type(alpha) == 'number' then
+            opacity = alpha / 255.0
+        else
+            opacity = 0.35
+        end
+    end
+
+    if opacity < 0.0 then opacity = 0.0 end
+    if opacity > 1.0 then opacity = 1.0 end
+
+    local col = typeCfg.sphereColor or { 255, 255, 255 }
+
+    DrawSphere(
+        zone.coords.x, zone.coords.y, zone.coords.z,
+        radius,
+        col[1] or 255, col[2] or 255, col[3] or 255,
+        opacity
+    )
+end
+
 CreateThread(function()
     while true do
-        local sleep = 1000
+        if Config.Enabled == false then
+            if inZoneType ~= nil then
+                inZoneType = nil
+                SendNUIMessage({ action = 'hide' })
+            end
+            Wait(1000)
+            goto continue
+        end
+
+        local sleep = 500
         local ped = PlayerPedId()
         local pos = GetEntityCoords(ped)
 
-        local isInSafe, isInDom, isInDrug = false, false, false
+        local perf = Config.Performance or {}
+        local insideSleep = perf.insideSleep or 0
+        local nearSleep = perf.nearSleep or 150
+        local farSleep = perf.farSleep or 750
+        local nearDist = perf.nearDistance or 120.0
 
-        for _, zone in pairs(safezones) do
-            if #(pos - zone.coords) <= zone.radius then
-                isInSafe = true
-                break
-            end
-        end
+        local currentType = findCurrentZoneType(pos)
+        local nearest = getNearestEnabledZoneDistance(pos)
 
-        for _, zone in pairs(dominationZones) do
-            if #(pos - zone.coords) <= zone.radius then
-                isInDom = true
-                break
-            end
-        end
-
-        for _, zone in pairs(drugzones) do
-            if #(pos - zone.coords) <= zone.radius then
-                isInDrug = true
-                break
-            end
-        end
-
-        if isInSafe then
-            sleep = 0
-            if not inSafezone then
-                inSafezone, inDomination, inDrugzone = true, false, false
-                SendNUIMessage({ action = "show", zoneType = "green" })
-            end
-            disableCombatControls()
-        elseif isInDom then
-            sleep = 0
-            if not inDomination then
-                inDomination, inSafezone, inDrugzone = true, false, false
-                SendNUIMessage({ action = "show", zoneType = "domination" })
-            end
-        elseif isInDrug then
-            sleep = 0
-            if not inDrugzone then
-                inDrugzone, inSafezone, inDomination = true, false, false
-                SendNUIMessage({ action = "show", zoneType = "drug" })
-            end
+        if currentType then
+            sleep = insideSleep
+        elseif nearest and nearest <= nearDist then
+            sleep = nearSleep
         else
-            if inSafezone or inDomination or inDrugzone then
-                inSafezone, inDomination, inDrugzone = false, false, false
-                SendNUIMessage({ action = "hide" })
+            sleep = farSleep
+        end
+
+        if currentType ~= inZoneType then
+            inZoneType = currentType
+            if inZoneType then
+                local typeCfg = getTypeConfig(inZoneType)
+                SendNUIMessage({ action = 'show', zoneType = typeCfg.nuiType or inZoneType })
+            else
+                SendNUIMessage({ action = 'hide' })
+            end
+        end
+
+        if inZoneType then
+            local typeCfg = getTypeConfig(inZoneType)
+            if typeCfg.disableCombat == true then
+                disableCombatControls()
+            end
+        end
+
+        local spheresCfg = Config.Spheres or {}
+        if spheresCfg.enabled ~= false then
+            local drawDist = spheresCfg.visibleDistance or 250.0
+            local bestZone = nil
+            local bestDist = nil
+
+            for zoneType, list in pairs(Config.Zones or {}) do
+                if isTypeEnabled(zoneType) then
+                    local typeCfg = getTypeConfig(zoneType)
+                    for _, zone in ipairs(list) do
+                        if zone.enabled ~= false then
+                            local d = #(pos - zone.coords)
+                            if d <= drawDist then
+                                if not bestDist or d < bestDist then
+                                    bestZone = { zone = zone, typeCfg = typeCfg }
+                                    bestDist = d
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+
+            if bestZone then
+                drawSphereAtZone(bestZone.zone, bestZone.typeCfg)
+                sleep = 0
             end
         end
 
         Wait(sleep)
+
+        ::continue::
     end
 end)
